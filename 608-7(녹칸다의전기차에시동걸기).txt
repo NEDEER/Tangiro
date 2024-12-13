@@ -1,0 +1,198 @@
+#include <PID_v1.h>
+#include <Encoder.h>
+Encoder wheelLeft(2, 4); //모터1
+Encoder wheelRight(3, 5); //모터2
+
+long positionLeft  = 0;
+long positionRight = 0;
+
+#define ENA 6 //아날로그출력
+#define IN1 7 //디지털출력
+#define IN2 8 //디지털출력
+#define IN3 9 //디지털출력
+#define IN4 10 //디지털출력
+#define ENB 11 //아날로그출력
+#define ENG_START 12
+#define ENG_STOP 13
+
+//이 예제에서는 속도는 항상 최대로 한다!
+
+//IN3이 LOW고 IN4가 HIGH일때 정회전(시계방향)
+//IN3이 HIGH고 IN4가 LOW일때 역회전(반시계방향)
+//IN3과 IN4가 모두 LOW일때 break
+
+unsigned long t = 0;
+bool engine_running =false;
+
+double M1_Input, M1_Output;
+double M2_Input, M2_Output;
+double Setpoint;
+//Setpoint : 내가 뭔가 설정하고자 하는 항목
+//Input : 자이로센서나 엔코더등에서 입력되는 항목(피드백)
+//OUTPUT : PID제어 결과값(제어)
+
+float filltered_M1_rpm = 0;
+float filltered_M2_rpm = 0;
+
+                 //0.8
+double Kp=0.5, Ki=1.0, Kd=0.01;
+//Kp : p에 대한 계수
+//Ki : i에 대한 계수
+//Kd : d에 대한 계수
+PID M1_pid(&M1_Input, &M1_Output, &Setpoint, Kp, Ki, Kd, DIRECT);
+PID M2_pid(&M2_Input, &M2_Output, &Setpoint, Kp, Ki, Kd, DIRECT);
+
+void setup()
+{
+  Serial.begin(9600);
+  pinMode(IN1,OUTPUT); //모터1
+  pinMode(IN2,OUTPUT); //모터1
+  pinMode(IN3,OUTPUT); //모터2
+  pinMode(IN4,OUTPUT); //모터2
+  pinMode(ENG_START,INPUT_PULLUP);
+  pinMode(ENG_STOP,INPUT_PULLUP);
+  
+  //Input값에 초기값을 준다(엔코더값의 초기값)
+  M1_Input = 0;
+  M2_Input = 0;
+  //내가 원하는 RPM값
+  Setpoint = 0;
+  //PID제어 결과 Output에서 출력되는 값의 제한범위
+  //모터드라이버의 ENA핀과 ENB핀은 속도제어를 위해서 PWM핀에 연결되어있고
+  //PWM값은 0~255범위로 설정해야한다!
+  M1_pid.SetOutputLimits(-255, 255);
+  M2_pid.SetOutputLimits(-255, 255);
+  //단 속도가 양의방향이면(전진중이라면~) PWM값을 0~255로 설정한다
+  //속도가 음의방향이면 PWM값이 -255~0의 구간이 되는데 그 값을 analogwrite에
+  //입력해줄수 없으므로 절대값을 취한다
+
+  //turn the PID on
+  M1_pid.SetMode(AUTOMATIC);
+  M2_pid.SetMode(AUTOMATIC);
+}
+
+void loop()
+{
+  if(digitalRead(ENG_START) == LOW){
+    //시동걸기!
+    engine_running = true;
+  }
+  if(digitalRead(ENG_STOP) == LOW){
+    //시동끄기!
+    engine_running = false;
+    //신호핀 전부 릴리즈하고
+    //설정된 속도가 있다면 다 0으로준다
+    digitalWrite(IN1,LOW);
+    digitalWrite(IN2,LOW);
+    digitalWrite(IN3,LOW);
+    digitalWrite(IN4,LOW);
+    analogWrite(ENA,0);
+    analogWrite(ENB,0);
+    Setpoint = 0;
+    filltered_M1_rpm = 0;
+    filltered_M2_rpm = 0;
+  }
+
+  if(engine_running == false) return;
+  
+  //0.01초 간격을 생성한다!
+  if(millis() - t > 10){
+    t = millis();
+
+    //아날로그0번핀에서 조이스틱값을 읽어와서
+    //오른쪽으로 제낀게 확인되면 속도를 전진쪽으로 올린다 280까지)
+    //왼쪽으로 제낀게 확인되면 속도를 후진쪽으로 올린다 -280까지)
+    int joy_x = analogRead(A0);
+    if(joy_x > 700){
+      //오른쪽
+      Setpoint++;
+      if(Setpoint > 280) Setpoint = 280;
+    }else if(joy_x < 300){
+      //왼쪽
+      Setpoint--;
+      if(Setpoint < -280) Setpoint = -280;
+    }else{
+      //속도가 올라가있다면 0으로 내리고
+      //속도가 내려가있다면 0으로 올린다
+      if(Setpoint > 0){
+        Setpoint--;
+      }else if(Setpoint < 0){
+        Setpoint++;
+      }
+    }
+    
+    //현재 엔코더량을 가져온다
+    long newLeft = wheelLeft.read();
+    long newRight = wheelRight.read();
+
+    float leftRPM = (newLeft*-1) * 6000 / 900.0;
+    float rightRPM = newRight * 6000 / 900.0;
+
+    //현재 모터의 RPM값
+    //실시간으로 업데이트되는 엔코더의값(피드백값)
+
+    filltered_M1_rpm = filltered_M1_rpm * 0.95 + leftRPM * 0.05;
+    filltered_M2_rpm = filltered_M2_rpm * 0.95 + rightRPM * 0.05;
+    
+    M1_Input = filltered_M1_rpm;
+    M2_Input = filltered_M2_rpm;
+    
+    M1_pid.Compute();
+    M2_pid.Compute();
+    //출력값을 모터드라이버에게 준다!
+    //만약 Pid제어의 결과값(Output)이 0이면 멈춤이고
+    //0보다크면 전진하는중에 속도가 pid제어되는것이고
+    //0보드다 작으면 후진하면서 속도가 pid제어되는것이다!
+
+    //모터1번
+    if(M1_Output == 0){
+      digitalWrite(IN1,LOW);
+      digitalWrite(IN2,LOW);
+      analogWrite(ENA,0);
+    }else if(M1_Output > 0){
+      //전진
+      digitalWrite(IN1,LOW);
+      digitalWrite(IN2,HIGH);
+      analogWrite(ENA,M1_Output);
+    }else if(M1_Output < 0){
+      //후진
+      digitalWrite(IN1,HIGH);
+      digitalWrite(IN2,LOW);
+      analogWrite(ENA,abs(M1_Output));
+    }
+    //모터2번
+    if(M2_Output == 0){
+      digitalWrite(IN3,LOW);
+      digitalWrite(IN4,LOW);
+      analogWrite(ENB,0);
+    }else if(M2_Output > 0){
+      //전진
+      digitalWrite(IN3,LOW);
+      digitalWrite(IN4,HIGH);
+      analogWrite(ENB,M2_Output);
+    }else if(M2_Output < 0){
+      //후진
+      digitalWrite(IN3,HIGH);
+      digitalWrite(IN4,LOW);
+      analogWrite(ENB,abs(M2_Output));
+    }
+    
+  
+    //계산할거 다하고 현재 엔코더량을 초기화한다
+    wheelLeft.write(0);
+    wheelRight.write(0);
+
+    //Serial.print("SetPoint=");
+    Serial.print(Setpoint);
+    //Serial.print(",Input=");
+    Serial.print(",");
+    Serial.print(M1_Input);
+    Serial.print(",");
+    Serial.print(M2_Input);
+    //Serial.print(",Output=");
+    //Serial.print(Output);
+    Serial.println();
+  }
+  
+}
+

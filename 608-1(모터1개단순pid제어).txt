@@ -1,0 +1,99 @@
+#include <PID_v1.h>
+#include <Encoder.h>
+Encoder wheelLeft(2, 4); //모터1
+Encoder wheelRight(3, 5); //모터2
+
+long positionLeft  = 0;
+long positionRight = 0;
+
+#define ENA 6 //아날로그출력
+#define IN1 7 //디지털출력
+#define IN2 8 //디지털출력
+#define IN3 9 //디지털출력
+#define IN4 10 //디지털출력
+#define ENB 11 //아날로그출력
+
+//이 예제에서는 속도는 항상 최대로 한다!
+
+//IN3이 LOW고 IN4가 HIGH일때 정회전(시계방향)
+//IN3이 HIGH고 IN4가 LOW일때 역회전(반시계방향)
+//IN3과 IN4가 모두 LOW일때 break
+
+unsigned long t = 0;
+
+double Setpoint, Input, Output;
+//Setpoint : 내가 뭔가 설정하고자 하는 항목
+//Input : 자이로센서나 엔코더등에서 입력되는 항목(피드백)
+//OUTPUT : PID제어 결과값(제어)
+
+double Kp=2, Ki=5, Kd=1;
+//Kp : p에 대한 계수
+//Ki : i에 대한 계수
+//Kd : d에 대한 계수
+PID myPID(&Input, &Output, &Setpoint, Kp, Ki, Kd, DIRECT);
+
+void setup()
+{
+  Serial.begin(9600);
+  pinMode(IN1,OUTPUT); //모터1
+  pinMode(IN2,OUTPUT); //모터1
+  pinMode(IN3,OUTPUT); //모터2
+  pinMode(IN4,OUTPUT); //모터2
+  
+  //Input값에 초기값을 준다(엔코더값의 초기값)
+  Input = 0;
+  //내가 원하는 RPM값
+  Setpoint = 0;
+  //PID제어 결과 Output에서 출력되는 값의 제한범위
+  //모터드라이버의 ENA핀과 ENB핀은 속도제어를 위해서 PWM핀에 연결되어있고
+  //PWM값은 0~255범위로 설정해야한다!
+  myPID.SetOutputLimits(0, 255);
+
+  //turn the PID on
+  myPID.SetMode(AUTOMATIC);
+}
+
+void loop()
+{
+  if(Serial.available()){
+    String data = Serial.readStringUntil('\n');
+    Setpoint = data.toInt();
+  }
+
+  //0.1초 간격을 생성한다!
+  if(millis() - t > 100){
+    t = millis();
+    //현재 엔코더량을 가져온다
+    long newLeft = wheelLeft.read();
+    float leftRPM = (newLeft*-1) * 600 / 900.0;
+    //현재 모터의 RPM값
+    //실시간으로 업데이트되는 엔코더의값(피드백값)
+    Input = leftRPM;
+    myPID.Compute();
+    //출력값을 모터드라이버에게 준다!
+    if(Output == 0){
+      //pwm값이 0인것을 의미한다
+      //모터가 멈춰있음을 의미함
+      digitalWrite(IN1,LOW);
+      digitalWrite(IN2,LOW);
+    }else{
+      //모터가 하나의 방향으로 회전함을 의미함
+      digitalWrite(IN1,LOW);
+      digitalWrite(IN2,HIGH);
+      
+    }
+    analogWrite(ENA,Output);
+  
+    wheelLeft.write(0);
+
+    Serial.print("SetPoint=");
+    Serial.print(Setpoint);
+    Serial.print(",Input=");
+    Serial.print(Input);
+    Serial.print(",Output=");
+    Serial.print(Output);
+    Serial.println();
+  }
+  
+}
+
